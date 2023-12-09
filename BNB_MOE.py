@@ -39,7 +39,7 @@ with suspend_nn_inits():
         max_seq_len=128,
         max_batch_size=4,
         num_gpus=2,
-        on_cpu=False,
+        on_cpu=True,
     )
 
 
