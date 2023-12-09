@@ -85,8 +85,8 @@ class Llama:
         start_time = time.time()
         checkpoints = sorted(Path(ckpt_dir).glob("*.pth"))
         assert len(checkpoints) > 0, f"no checkpoint files found in {ckpt_dir}"
-        assert model_parallel_size == len(
-            checkpoints
+        assert (
+            model_parallel_size == len(checkpoints)
         ), f"Loading a checkpoint for MP={len(checkpoints)} but world size is {model_parallel_size}"
         ckpt_path = checkpoints[0]
         with open(Path(ckpt_dir) / "params.json", "r") as f:
@@ -100,7 +100,7 @@ class Llama:
         )
         tokenizer = Tokenizer(model_path=tokenizer_path)
         model_args.vocab_size = tokenizer.n_words
-        torch.set_default_tensor_type(torch.cuda.HalfTensor)
+        # torch.set_default_tensor_type(torch.cuda.HalfTensor)
         model = Transformer(model_args)
         print(f"=== created Mixtral 8x7B. Experts spread over {num_gpus} GPUs ===")
         checkpoint = torch.load(ckpt_path, map_location="cpu")

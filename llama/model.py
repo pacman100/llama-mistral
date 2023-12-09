@@ -27,6 +27,7 @@ class ModelArgs:
     moe: Optional[Dict[str, int]] = None
     num_gpus: int = 1
 
+
 ROPE_THETA = 1e6
 
 
@@ -174,6 +175,7 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
 
 class Attention(nn.Module):
     """Multi-head attention module."""
+
     def __init__(self, args: ModelArgs):
         """
         Initialize the Attention module.
@@ -280,12 +282,18 @@ class Attention(nn.Module):
         values = self.cache_v[:bsz, : start_pos + seqlen]
 
         # repeat k/v heads if n_kv_heads < n_heads
-        keys = repeat_kv(keys, self.n_rep)  # (bs, cache_len + seqlen, n_local_heads, head_dim)
-        values = repeat_kv(values, self.n_rep)  # (bs, cache_len + seqlen, n_local_heads, head_dim)
+        keys = repeat_kv(
+            keys, self.n_rep
+        )  # (bs, cache_len + seqlen, n_local_heads, head_dim)
+        values = repeat_kv(
+            values, self.n_rep
+        )  # (bs, cache_len + seqlen, n_local_heads, head_dim)
 
         xq = xq.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
-        keys = keys.transpose(1, 2) # (bs, n_local_heads, cache_len + seqlen, head_dim)
-        values = values.transpose(1, 2) # (bs, n_local_heads, cache_len + seqlen, head_dim)
+        keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
+        values = values.transpose(
+            1, 2
+        )  # (bs, n_local_heads, cache_len + seqlen, head_dim)
         scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
         if mask is not None:
             scores = scores + mask  # (bs, n_local_heads, seqlen, cache_len + seqlen)
@@ -318,20 +326,14 @@ class FeedForward(nn.Module):
         """
         super().__init__()
 
-        self.w1 = nn.Linear(
-            dim, hidden_dim, bias=False
-        )
-        self.w2 = nn.Linear(
-            hidden_dim, dim, bias=False
-        )
-        self.w3 = nn.Linear(
-            dim, hidden_dim, bias=False
-        )
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
     def forward(self, x):
-        device = x.device
-        x = x.to(self.w1.weight.device)
-        return self.w2(F.silu(self.w1(x)) * self.w3(x)).to(device)
+        # device = x.device
+        # x = x.to(self.w1.weight.device)
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))  # .to(device)
 
 
 class MoE(nn.Module):
@@ -343,7 +345,9 @@ class MoE(nn.Module):
         **kwargs,
     ):
         super().__init__()
-        self.experts = nn.ModuleList([FeedForward(**kwargs).to(f"cuda:{i//num_shards}") for i in range(num_experts)])
+        self.experts = nn.ModuleList(
+            [FeedForward(**kwargs) for i in range(num_experts)]
+        )  # .to(f"cuda:{i//num_shards}")
         self.gate = nn.Linear(kwargs["dim"], num_experts, bias=False)
         self.num_experts_per_tok = num_experts_per_tok
 
@@ -352,15 +356,21 @@ class MoE(nn.Module):
         x = x.view(-1, x.shape[-1])
 
         scores = self.gate(x)
-        expert_weights, expert_indices = torch.topk(scores, self.num_experts_per_tok, dim=-1)
+        expert_weights, expert_indices = torch.topk(
+            scores, self.num_experts_per_tok, dim=-1
+        )
         expert_weights = expert_weights.softmax(dim=-1)
         flat_expert_indices = expert_indices.view(-1)
 
         x = x.repeat_interleave(self.num_experts_per_tok, dim=0)
         y = torch.empty_like(x)
         for i, expert in enumerate(self.experts):
-            y[flat_expert_indices == i] = expert(x[flat_expert_indices == i])
-        y = (y.view(*expert_weights.shape, -1) * expert_weights.unsqueeze(-1)).sum(dim=1)
+            y[flat_expert_indices == i] = expert(x[flat_expert_indices == i]).to(
+                torch.float
+            )
+        y = (y.view(*expert_weights.shape, -1) * expert_weights.unsqueeze(-1)).sum(
+            dim=1
+        )
         return y.view(*orig_shape)
 
 
@@ -389,7 +399,9 @@ class TransformerBlock(nn.Module):
         self.dim = args.dim
         self.head_dim = args.dim // args.n_heads
         self.attention = Attention(args)
-        assert args.moe["num_experts"] % args.num_gpus == 0, "num_experts must be divisible by num_gpus"
+        assert (
+            args.moe["num_experts"] % args.num_gpus == 0
+        ), "num_experts must be divisible by num_gpus"
         self.feed_forward = MoE(
             dim=args.dim,
             hidden_dim=args.hidden_dim,
@@ -451,23 +463,20 @@ class Transformer(nn.Module):
         self.vocab_size = params.vocab_size
         self.n_layers = params.n_layers
 
-        self.tok_embeddings = nn.Embedding(
-            params.vocab_size, params.dim
-        )
+        self.tok_embeddings = nn.Embedding(params.vocab_size, params.dim)
 
         self.layers = torch.nn.ModuleList()
         for layer_id in range(params.n_layers):
             self.layers.append(TransformerBlock(layer_id, params))
 
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
-        self.output = nn.Linear(
-            params.dim, params.vocab_size, bias=False
-        )
+        self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
         self.freqs_cis = precompute_freqs_cis(
             # Note that self.params.max_seq_len is multiplied by 2 because the token limit for the Llama 2 generation of models is 4096.
             # Adding this multiplier instead of using 4096 directly allows for dynamism of token lengths while training or fine-tuning.
-            self.params.dim // self.params.n_heads, self.params.max_seq_len * 2
+            self.params.dim // self.params.n_heads,
+            self.params.max_seq_len * 2,
         )
 
     @torch.inference_mode()
@@ -490,9 +499,7 @@ class Transformer(nn.Module):
 
         mask = None
         if seqlen > 1:
-            mask = torch.full(
-                (seqlen, seqlen), float("-inf"), device=tokens.device
-            )
+            mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
 
             mask = torch.triu(mask, diagonal=1)
 
@@ -500,10 +507,9 @@ class Transformer(nn.Module):
             # only for the new sequence. Thus, the matrix of scores is of size
             # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
             # j > cache_len + i, since row i corresponds to token cache_len + i.
-            mask = torch.hstack([
-                torch.zeros((seqlen, start_pos), device=tokens.device),
-                mask
-            ]).type_as(h)
+            mask = torch.hstack(
+                [torch.zeros((seqlen, start_pos), device=tokens.device), mask]
+            ).type_as(h)
 
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
