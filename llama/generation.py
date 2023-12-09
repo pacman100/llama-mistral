@@ -53,6 +53,7 @@ class Llama:
         num_gpus: int,
         model_parallel_size: Optional[int] = None,
         seed: int = 1,
+        on_cpu=True,
     ) -> "Llama":
         """
         Build a Llama instance by initializing and loading a pre-trained model.
@@ -96,11 +97,13 @@ class Llama:
             max_seq_len=max_seq_len,
             max_batch_size=max_batch_size,
             num_gpus=num_gpus,
+            on_cpu=on_cpu,
             **params,
         )
         tokenizer = Tokenizer(model_path=tokenizer_path)
         model_args.vocab_size = tokenizer.n_words
-        # torch.set_default_tensor_type(torch.cuda.HalfTensor)
+        if not on_cpu:
+            torch.set_default_tensor_type(torch.cuda.HalfTensor)
         model = Transformer(model_args)
         print(f"=== created Mixtral 8x7B. Experts spread over {num_gpus} GPUs ===")
         checkpoint = torch.load(ckpt_path, map_location="cpu")
