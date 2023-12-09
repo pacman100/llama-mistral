@@ -26,6 +26,7 @@ class ModelArgs:
 
     moe: Optional[Dict[str, int]] = None
     num_gpus: int = 1
+    on_cpu: bool = True
 
 
 ROPE_THETA = 1e6
@@ -342,12 +343,20 @@ class MoE(nn.Module):
         num_experts: int,
         num_experts_per_tok: int,
         num_shards: int,
+        on_cpu=True,
         **kwargs,
     ):
         super().__init__()
-        self.experts = nn.ModuleList(
-            [FeedForward(**kwargs) for i in range(num_experts)]
-        )  # .to(f"cuda:{i//num_shards}")
+        self.experts = (
+            nn.ModuleList([FeedForward(**kwargs) for i in range(num_experts)])
+            if on_cpu
+            else nn.ModuleList(
+                [
+                    FeedForward(**kwargs).to(f"cuda:{i//num_shards}")
+                    for i in range(num_experts)
+                ]
+            )
+        )
         self.gate = nn.Linear(kwargs["dim"], num_experts, bias=False)
         self.num_experts_per_tok = num_experts_per_tok
 
@@ -406,6 +415,7 @@ class TransformerBlock(nn.Module):
             dim=args.dim,
             hidden_dim=args.hidden_dim,
             num_shards=args.moe["num_experts"] // args.num_gpus,
+            on_cpu=args.on_cpu,
             **args.moe,
         )
         self.layer_id = layer_id
